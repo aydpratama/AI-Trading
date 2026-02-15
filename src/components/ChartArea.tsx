@@ -111,6 +111,9 @@ export default function ChartArea({
     const bollingerMiddleRef = useRef<ISeriesApi<'Line'> | null>(null);
     const bollingerLowerRef = useRef<ISeriesApi<'Line'> | null>(null);
 
+    const srCanvasRef = useRef<HTMLCanvasElement>(null);
+    const [showSRZones, setShowSRZones] = useState(true);
+
     const [splitRatio, setSplitRatio] = useState(0.7);
     const [candles, setCandles] = useState<CandleData[]>([]);
     const [localPositions, setLocalPositions] = useState<Position[]>([]);
@@ -158,6 +161,180 @@ export default function ChartArea({
         { value: '4H', label: '4H' },
         { value: '1D', label: '1D' },
     ];
+
+    // ========================
+    // S/R Zone Calculation
+    // ========================
+    const calculateSRZones = useCallback((data: CandleData[], lookback: number = 20): { price: number; width: number; type: 'support' | 'resistance'; strength: number }[] => {
+        if (data.length < lookback * 2) return [];
+
+        const swingHighs: number[] = [];
+        const swingLows: number[] = [];
+
+        // Find swing highs and lows
+        for (let i = lookback; i < data.length - lookback; i++) {
+            let isHigh = true;
+            let isLow = true;
+            for (let j = i - lookback; j <= i + lookback; j++) {
+                if (j === i) continue;
+                if (data[j].high >= data[i].high) isHigh = false;
+                if (data[j].low <= data[i].low) isLow = false;
+            }
+            if (isHigh) swingHighs.push(data[i].high);
+            if (isLow) swingLows.push(data[i].low);
+        }
+
+        // Cluster nearby levels together
+        const clusterLevels = (levels: number[], threshold: number): { price: number; count: number }[] => {
+            if (levels.length === 0) return [];
+            const sorted = [...levels].sort((a, b) => a - b);
+            const clusters: { prices: number[]; count: number }[] = [];
+            let currentCluster: number[] = [sorted[0]];
+
+            for (let i = 1; i < sorted.length; i++) {
+                if (Math.abs(sorted[i] - sorted[i - 1]) / sorted[i - 1] < threshold) {
+                    currentCluster.push(sorted[i]);
+                } else {
+                    clusters.push({ prices: currentCluster, count: currentCluster.length });
+                    currentCluster = [sorted[i]];
+                }
+            }
+            clusters.push({ prices: currentCluster, count: currentCluster.length });
+
+            return clusters.map(c => ({
+                price: c.prices.reduce((a, b) => a + b, 0) / c.prices.length,
+                count: c.count
+            }));
+        };
+
+        // Use price range to determine clustering threshold
+        const allPrices = data.map(d => d.close);
+        const priceRange = Math.max(...allPrices) - Math.min(...allPrices);
+        const avgPrice = allPrices.reduce((a, b) => a + b, 0) / allPrices.length;
+        const threshold = (priceRange / avgPrice) * 0.05; // 5% of range as cluster threshold
+
+        const resistanceClusters = clusterLevels(swingHighs, threshold);
+        const supportClusters = clusterLevels(swingLows, threshold);
+
+        const currentPrice = data[data.length - 1].close;
+        const zoneWidth = avgPrice * 0.002; // zone height = 0.2% of price
+
+        const zones: { price: number; width: number; type: 'support' | 'resistance'; strength: number }[] = [];
+
+        resistanceClusters.forEach(c => {
+            if (c.price > currentPrice) {
+                zones.push({ price: c.price, width: zoneWidth, type: 'resistance', strength: Math.min(c.count, 5) });
+            }
+        });
+
+        supportClusters.forEach(c => {
+            if (c.price < currentPrice) {
+                zones.push({ price: c.price, width: zoneWidth, type: 'support', strength: Math.min(c.count, 5) });
+            }
+        });
+
+        // Sort by distance from current price, take top 3 of each
+        const resistances = zones.filter(z => z.type === 'resistance').sort((a, b) => a.price - b.price).slice(0, 3);
+        const supports = zones.filter(z => z.type === 'support').sort((a, b) => b.price - a.price).slice(0, 3);
+
+        return [...resistances, ...supports];
+    }, []);
+
+    // Draw S/R zones on canvas overlay
+    const drawSRZones = useCallback(() => {
+        const canvas = srCanvasRef.current;
+        const chart = chartRef.current;
+        const series = candleSeriesRef.current;
+        if (!canvas || !chart || !series || !showSRZones || candles.length === 0) {
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+            return;
+        }
+
+        const container = chartContainerRef.current;
+        if (!container) return;
+
+        const rect = container.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const zones = calculateSRZones(candles);
+        const rightPadding = 55; // Space for price scale
+
+        zones.forEach((zone, idx) => {
+            const topY = series.priceToCoordinate(zone.price + zone.width / 2);
+            const bottomY = series.priceToCoordinate(zone.price - zone.width / 2);
+
+            if (topY === null || bottomY === null) return;
+
+            const y = Math.min(topY, bottomY);
+            const h = Math.abs(bottomY - topY);
+            const zoneH = Math.max(h, 4); // minimum 4px height
+
+            // Zone color
+            const alpha = 0.12 + (zone.strength * 0.04);
+            if (zone.type === 'resistance') {
+                ctx.fillStyle = `rgba(239, 83, 80, ${alpha})`;
+            } else {
+                ctx.fillStyle = `rgba(38, 166, 154, ${alpha})`;
+            }
+
+            // Draw zone block
+            ctx.fillRect(0, y, canvas.width - rightPadding, zoneH);
+
+            // Draw top and bottom border lines
+            ctx.strokeStyle = zone.type === 'resistance'
+                ? `rgba(239, 83, 80, ${0.3 + zone.strength * 0.1})`
+                : `rgba(38, 166, 154, ${0.3 + zone.strength * 0.1})`;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width - rightPadding, y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, y + zoneH);
+            ctx.lineTo(canvas.width - rightPadding, y + zoneH);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Label
+            const label = zone.type === 'resistance' ? `R${idx + 1}` : `S${idx + 1 - zones.filter(z => z.type === 'resistance').length}`;
+            ctx.font = 'bold 10px -apple-system, sans-serif';
+            ctx.fillStyle = zone.type === 'resistance' ? 'rgba(239, 83, 80, 0.85)' : 'rgba(38, 166, 154, 0.85)';
+            ctx.textAlign = 'left';
+            ctx.fillText(label, 6, y + zoneH / 2 + 3);
+
+            // Price label
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.fillStyle = zone.type === 'resistance' ? 'rgba(239, 83, 80, 0.6)' : 'rgba(38, 166, 154, 0.6)';
+            ctx.fillText(zone.price.toFixed(symbolDigits), 22, y + zoneH / 2 + 3);
+        });
+    }, [candles, showSRZones, calculateSRZones, symbolDigits]);
+
+    // Redraw S/R zones when chart changes
+    useEffect(() => {
+        drawSRZones();
+
+        const chart = chartRef.current;
+        if (!chart) return;
+
+        // Subscribe to time scale changes (scroll/zoom)
+        const handler = () => {
+            requestAnimationFrame(drawSRZones);
+        };
+        chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
+
+        return () => {
+            try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch { }
+        };
+    }, [drawSRZones]);
 
     // Technical indicator calculations
     const calculateRSI = useCallback((data: CandleData[], period: number = 14): { time: number | string, value: number }[] => {
@@ -1054,6 +1231,18 @@ export default function ChartArea({
                             Indicators
                         </div>
                         <div className="flex flex-col gap-1">
+                            {/* S/R Zone toggle */}
+                            <label className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-500/10 cursor-pointer border-b mb-1 pb-1" style={{ borderColor: theme === 'dark' ? '#2a2e39' : '#e1e1e1' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={showSRZones}
+                                    onChange={(e) => setShowSRZones(e.target.checked)}
+                                    className="rounded accent-blue-500"
+                                />
+                                <span className="text-xs font-medium" style={{ color: theme === 'dark' ? '#d1d4db' : '#4a4a4a' }}>
+                                    S/R Zones
+                                </span>
+                            </label>
                             {[
                                 { key: 'rsi', label: 'RSI (14)', checked: indicatorSettings.rsi.visible },
                                 { key: 'ema', label: 'EMA (9,21,50)', checked: indicatorSettings.ema.visible },
@@ -1091,8 +1280,15 @@ export default function ChartArea({
                         </div>
                     </div>
                 )}
+                {/* S/R Zone Canvas Overlay */}
+                <canvas
+                    ref={srCanvasRef}
+                    className="absolute inset-0 pointer-events-none z-10"
+                    style={{ width: '100%', height: '100%' }}
+                />
+
                 {loading && chartLayout === 'single' && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-background/50">
+                    <div className="absolute inset-0 flex items-center justify-center bg-background/50 z-20">
                         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
                     </div>
                 )}
