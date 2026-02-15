@@ -14,6 +14,7 @@ from mt5.connector import connector
 from mt5.position_manager import position_manager
 from database import init_db
 from notification.telegram import telegram_notifier
+from ai.auto_scanner import auto_scanner
 from api.routes import market, positions, orders, signals, ai, backtest, journal, telegram
 from api.websocket import ws_manager
 from fastapi import WebSocket
@@ -34,7 +35,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
     logger.info("=" * 50)
-    logger.info("🚀 Starting AI Trading Backend...")
+    logger.info("Starting TradingAYDP Backend...")
     logger.info("=" * 50)
 
     # Initialize database
@@ -56,22 +57,27 @@ async def lifespan(app: FastAPI):
     # Configure Telegram if credentials available
     if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
         telegram_notifier.configure(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
-        logger.info("📱 Telegram notifier configured from .env")
+        logger.info("Telegram notifier configured from .env")
+
+        # Start auto scanner
+        auto_scanner.start()
+        logger.info("Smart Auto Scanner started")
     else:
-        logger.info("ℹ️ Telegram not configured (can be set via UI)")
+        logger.info("Telegram not configured (can be set via Settings > Telegram)")
 
     yield
 
     # Shutdown
-    logger.info("🛑 Shutting down AI Trading Backend...")
+    logger.info("Shutting down TradingAYDP Backend...")
+    auto_scanner.stop()
     connector.disconnect()
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="AI Trading Backend",
-    description="Backend untuk MT5 trading dengan AI signals (EURUSD + Telegram)",
+    title="TradingAYDP Backend",
+    description="TradingAYDP — AI Trading Platform with Smart Auto Scanner",
     version="1.0.0",
     lifespan=lifespan
 )

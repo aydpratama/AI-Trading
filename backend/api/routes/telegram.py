@@ -1,7 +1,7 @@
-"""Telegram Notification API Routes"""
+"""Telegram & Scanner API Routes"""
 from fastapi import APIRouter, Query
-from typing import Optional
 from notification.telegram import telegram_notifier
+from ai.auto_scanner import auto_scanner
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,13 +13,7 @@ async def test_telegram(
     bot_token: str = Query(...),
     chat_id: str = Query(...)
 ):
-    """
-    Test Telegram bot connection and send a test message.
-    
-    Parameters:
-    - bot_token: Telegram Bot Token (from @BotFather)
-    - chat_id: Telegram Chat ID (user or group)
-    """
+    """Test Telegram bot connection and send a test message."""
     result = await telegram_notifier.test_connection(bot_token, chat_id)
     return result
 
@@ -29,26 +23,49 @@ async def configure_telegram(
     bot_token: str = Query(...),
     chat_id: str = Query(...)
 ):
-    """
-    Configure Telegram credentials for the notifier.
-    This enables automatic notifications for signals and trades.
-    """
+    """Configure Telegram and start auto scanner."""
     telegram_notifier.configure(bot_token, chat_id)
+
+    # Auto-start scanner when Telegram is configured
+    if telegram_notifier.enabled and not auto_scanner.running:
+        auto_scanner.start()
+        logger.info("Auto scanner started via UI configuration")
+
     return {
         "success": True,
-        "message": "Telegram notifier configured",
-        "enabled": telegram_notifier.enabled
+        "message": "Telegram configured, scanner started",
+        "telegram_enabled": telegram_notifier.enabled,
+        "scanner_running": auto_scanner.running
     }
 
 
 @router.get("/status")
 async def telegram_status():
-    """Check if Telegram notifier is configured and enabled"""
+    """Get Telegram + Scanner status"""
+    scanner_status = auto_scanner.get_status()
     return {
-        "enabled": telegram_notifier.enabled,
-        "has_token": bool(telegram_notifier.bot_token),
-        "has_chat_id": bool(telegram_notifier.chat_id)
+        "telegram_enabled": telegram_notifier.enabled,
+        "scanner": scanner_status
     }
+
+
+@router.post("/scanner/start")
+async def start_scanner():
+    """Manually start the auto scanner"""
+    if not telegram_notifier.enabled:
+        return {"success": False, "message": "Telegram belum dikonfigurasi"}
+    if auto_scanner.running:
+        return {"success": True, "message": "Scanner sudah berjalan", "status": auto_scanner.get_status()}
+
+    auto_scanner.start()
+    return {"success": True, "message": "Scanner dimulai", "status": auto_scanner.get_status()}
+
+
+@router.post("/scanner/stop")
+async def stop_scanner():
+    """Stop the auto scanner"""
+    auto_scanner.stop()
+    return {"success": True, "message": "Scanner dihentikan"}
 
 
 @router.post("/send-signal")

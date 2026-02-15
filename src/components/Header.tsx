@@ -68,7 +68,7 @@ export default function Header({
             <Grid className="text-white" size={12} />
           </div>
           <span className="font-bold text-sm tracking-tight text-foreground dark:text-white">
-            Nexus<span className="text-blue-500">Trade</span>
+            Trading<span className="text-blue-500">AYDP</span>
           </span>
         </div>
       </div>

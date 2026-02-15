@@ -3,7 +3,7 @@ import './globals.css';
 import ThemeProvider from '@/components/ThemeProvider';
 
 export const metadata: Metadata = {
-  title: 'AI Trading - Next Gen Platform',
+  title: 'TradingAYDP — Smart Trading Platform',
   description: 'AI-powered trading analysis and signals',
 };
 
