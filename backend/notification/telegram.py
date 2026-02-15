@@ -1,273 +1,244 @@
-"""Telegram Notification Manager"""
+"""Telegram Notification Manager - Lightweight using httpx"""
+import httpx
 import logging
-from typing import List, Dict, Any
-from telegram import Bot
-from telegram.ext import ApplicationBuilder, CommandHandler
-from config import settings
+from typing import Dict, Any, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+
 
 class TelegramNotifier:
-    """Send notifications via Telegram Bot API"""
+    """Send notifications via Telegram Bot API using httpx"""
 
     def __init__(self):
-        self.bot_token = settings.TELEGRAM_BOT_TOKEN
-        self.chat_id = settings.TELEGRAM_CHAT_ID
-        self.application = None
+        self.bot_token: str = ""
+        self.chat_id: str = ""
+        self.enabled: bool = False
 
-    def send_signal_notification(self, signal: Dict[str, Any]):
-        """Send signal notification"""
-        if not self.bot_token or not self.chat_id:
-            logger.warning("Telegram bot not configured")
-            return
+    def configure(self, bot_token: str, chat_id: str):
+        """Configure Telegram credentials at runtime"""
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.enabled = bool(bot_token and chat_id)
+        if self.enabled:
+            logger.info("📱 Telegram notifier configured successfully")
 
-        try:
-            bot = Bot(token=self.bot_token)
+    def _api_url(self, method: str) -> str:
+        return TELEGRAM_API.format(token=self.bot_token, method=method)
 
-            # Format signal message
-            message = self._format_signal_message(signal)
-
-            # Send message
-            bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
-
-            logger.info(f"Signal notification sent: {signal['type']} {signal['symbol']}")
-
-        except Exception as e:
-            logger.error(f"Failed to send signal notification: {e}")
-
-    def send_position_update(self, position: Dict[str, Any]):
-        """Send position update notification"""
-        if not self.bot_token or not self.chat_id:
-            return
+    async def _send_message(self, text: str, parse_mode: str = "HTML") -> dict:
+        """Send a message via Telegram Bot API"""
+        if not self.enabled:
+            return {"ok": False, "error": "Telegram not configured"}
 
         try:
-            bot = Bot(token=self.bot_token)
-
-            message = self._format_position_message(position)
-
-            bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
-
-            logger.info(f"Position update sent: {position['ticket']}")
-
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    self._api_url("sendMessage"),
+                    json={
+                        "chat_id": self.chat_id,
+                        "text": text,
+                        "parse_mode": parse_mode,
+                        "disable_web_page_preview": True
+                    }
+                )
+                result = response.json()
+                if not result.get("ok"):
+                    logger.error(f"Telegram API error: {result.get('description')}")
+                return result
         except Exception as e:
-            logger.error(f"Failed to send position notification: {e}")
+            logger.error(f"Failed to send Telegram message: {e}")
+            return {"ok": False, "error": str(e)}
 
-    def send_trade_closed(self, trade: Dict[str, Any]):
+    async def test_connection(self, bot_token: str, chat_id: str) -> dict:
+        """Test Telegram connection with given credentials"""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # 1. Verify bot token by calling getMe
+                me_response = await client.get(
+                    TELEGRAM_API.format(token=bot_token, method="getMe")
+                )
+                me_result = me_response.json()
+                if not me_result.get("ok"):
+                    return {
+                        "success": False,
+                        "message": f"Token tidak valid: {me_result.get('description', 'Unknown error')}"
+                    }
+
+                bot_name = me_result["result"].get("first_name", "Bot")
+                bot_username = me_result["result"].get("username", "")
+
+                # 2. Send test message
+                test_msg = (
+                    "🤖 <b>NexusTrade Bot Connected!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ Bot: @{bot_username}\n"
+                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Anda akan menerima notifikasi:\n"
+                    "• 📊 Signal trading baru\n"
+                    "• 📈 Update posisi\n"
+                    "• ✅ Trade ditutup\n"
+                    "• ⚠️ Alert risiko\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "<i>NexusTrade AI Trading Platform</i>"
+                )
+
+                send_response = await client.post(
+                    TELEGRAM_API.format(token=bot_token, method="sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": test_msg,
+                        "parse_mode": "HTML"
+                    }
+                )
+                send_result = send_response.json()
+
+                if send_result.get("ok"):
+                    return {
+                        "success": True,
+                        "message": f"Terhubung ke @{bot_username}! Cek Telegram Anda.",
+                        "bot_name": bot_name,
+                        "bot_username": bot_username
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Gagal mengirim pesan: {send_result.get('description', 'Chat ID salah atau bot belum di-start')}"
+                    }
+
+        except httpx.ConnectError:
+            return {"success": False, "message": "Tidak bisa terhubung ke Telegram API. Periksa koneksi internet."}
+        except Exception as e:
+            return {"success": False, "message": f"Error: {str(e)}"}
+
+    # ========================
+    # Notification Methods
+    # ========================
+
+    async def send_signal(self, signal: Dict[str, Any]) -> dict:
+        """Send new signal notification"""
+        direction = signal.get("direction", "UNKNOWN")
+        symbol = signal.get("symbol", "???")
+        confidence = signal.get("confidence", 0)
+        entry = signal.get("entry", 0)
+        sl = signal.get("stop_loss", signal.get("sl", 0))
+        tp = signal.get("take_profit", signal.get("tp", 0))
+        lot_size = signal.get("lot_size", 0)
+        rr = signal.get("risk_reward", 0)
+        reasons = signal.get("reasons", [])
+
+        emoji = "🟢" if direction == "BUY" else "🔴"
+        conf_bar = self._progress_bar(confidence)
+
+        # Format prices based on symbol
+        decimals = 2 if "XAU" in symbol or "XAG" in symbol else 3 if "JPY" in symbol else 5
+
+        message = (
+            f"📊 <b>SIGNAL — {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{emoji} <b>{direction}</b>  |  Confidence: <b>{confidence:.0f}%</b>\n"
+            f"{conf_bar}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📍 Entry: <code>{entry:.{decimals}f}</code>\n"
+            f"🛡 SL: <code>{sl:.{decimals}f}</code>\n"
+            f"🎯 TP: <code>{tp:.{decimals}f}</code>\n"
+            f"📐 R:R = <b>1:{rr:.1f}</b>\n"
+            f"📦 Lot: <b>{lot_size}</b>\n"
+        )
+
+        if reasons:
+            message += f"━━━━━━━━━━━━━━━━━━━━\n💡 <b>Reasons:</b>\n"
+            for r in reasons[:5]:
+                message += f"  • {r}\n"
+
+        message += (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}  |  <i>NexusTrade</i>"
+        )
+
+        return await self._send_message(message)
+
+    async def send_trade_opened(self, trade: Dict[str, Any]) -> dict:
+        """Send trade opened notification"""
+        direction = trade.get("direction", trade.get("type", "UNKNOWN"))
+        symbol = trade.get("symbol", "???")
+        ticket = trade.get("ticket", 0)
+        volume = trade.get("volume", trade.get("lot_size", 0))
+        entry = trade.get("entry", trade.get("open_price", 0))
+        sl = trade.get("sl", trade.get("stop_loss", 0))
+        tp = trade.get("tp", trade.get("take_profit", 0))
+
+        emoji = "🟢" if direction in ("BUY", "buy", 0) else "🔴"
+        decimals = 2 if "XAU" in symbol else 3 if "JPY" in symbol else 5
+
+        message = (
+            f"📈 <b>TRADE OPENED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{emoji} {symbol} — <b>{direction}</b>\n"
+            f"🎫 Ticket: <code>{ticket}</code>\n"
+            f"📦 Volume: <b>{volume}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📍 Entry: <code>{entry:.{decimals}f}</code>\n"
+            f"🛡 SL: <code>{sl:.{decimals}f}</code>\n"
+            f"🎯 TP: <code>{tp:.{decimals}f}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}  |  <i>NexusTrade</i>"
+        )
+
+        return await self._send_message(message)
+
+    async def send_trade_closed(self, trade: Dict[str, Any]) -> dict:
         """Send trade closed notification"""
-        if not self.bot_token or not self.chat_id:
-            return
+        symbol = trade.get("symbol", "???")
+        ticket = trade.get("ticket", 0)
+        pnl = trade.get("profit", trade.get("pnl", 0))
+        direction = trade.get("direction", trade.get("type", "UNKNOWN"))
 
-        try:
-            bot = Bot(token=self.bot_token)
+        pnl_emoji = "💰" if pnl >= 0 else "💸"
+        pnl_text = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
 
-            message = self._format_trade_message(trade)
+        message = (
+            f"✅ <b>TRADE CLOSED</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{'🟢' if direction in ('BUY', 'buy', 0) else '🔴'} {symbol} — {direction}\n"
+            f"🎫 Ticket: <code>{ticket}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{pnl_emoji} PnL: <b>{pnl_text}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}  |  <i>NexusTrade</i>"
+        )
 
-            bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
+        return await self._send_message(message)
 
-            logger.info(f"Trade closed notification sent: {trade['ticket']}")
-
-        except Exception as e:
-            logger.error(f"Failed to send trade notification: {e}")
-
-    def send_daily_summary(self, performance: Dict[str, Any]):
-        """Send daily summary notification"""
-        if not self.bot_token or not self.chat_id:
-            return
-
-        try:
-            bot = Bot(token=self.bot_token)
-
-            message = self._format_summary_message(performance)
-
-            bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML'
-            )
-
-            logger.info("Daily summary notification sent")
-
-        except Exception as e:
-            logger.error(f"Failed to send daily summary: {e}")
-
-    def send_risk_alert(self, risk_type: str, message: str):
+    async def send_risk_alert(self, alert_type: str, details: str) -> dict:
         """Send risk alert notification"""
-        if not self.bot_token or not self.chat_id:
-            return
+        emoji_map = {
+            "MAX_DAILY_LOSS": "🚨",
+            "MAX_DRAWDOWN": "🚨",
+            "MAX_POSITION": "⚠️",
+            "LOW_MARGIN": "⚠️",
+        }
+        emoji = emoji_map.get(alert_type, "⚠️")
 
-        try:
-            bot = Bot(token=self.bot_token)
-
-            risk_emoji = {
-                "MAX_POSITION": "⚠️",
-                "MAX_EXPOSURE": "⚠️",
-                "MAX_DAILY_LOSS": "🚨",
-                "MIN_RR": "⚠️"
-            }
-
-            emoji = risk_emoji.get(risk_type, "⚠️")
-
-            bot.send_message(
-                chat_id=self.chat_id,
-                text=f"{emoji} RISK ALERT: {message}",
-                parse_mode='HTML'
-            )
-
-            logger.warning(f"Risk alert sent: {risk_type}")
-
-        except Exception as e:
-            logger.error(f"Failed to send risk alert: {e}")
-
-    def _format_signal_message(self, signal: Dict[str, Any]) -> str:
-        """Format signal message"""
-        type_emoji = "🟢" if signal['type'] == "BUY" else "🔴"
-        confidence_color = "text-green-500" if signal['type'] == "BUY" else "text-red-500"
-
-        message = f"""
-📊 <b>EURUSD Signal ({signal['timeframe']})</b>
-━━━━━━━━━━━━━━━━━━━━
-{type_emoji} <b>Type: {signal['type']}</b>
-{type_emoji} <b>Confidence: {signal['confidence']}%</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>Entry:</b> {signal['entry']:.5f}
-<b>SL:</b> {signal['sl']:.5f} | <b>TP:</b> {signal['tp']:.5f}
-<b>RR:</b> 1:{signal['risk_reward']}
-━━━━━━━━━━━━━━━━━━━━
-<b>RSI:</b> {signal['indicators']['rsi']:.1f}
-<b>MACD:</b> {signal['indicators']['macd']:.5f}
-<b>EMA:</b> EMA9={signal['indicators']['ema_9']:.5f} | EMA21={signal['indicators']['ema_21']:.5f}
-━━━━━━━━━━━━━━━━━━━━
-<b>Reason:</b>
-"""
-
-        for reason in signal['reason']:
-            message += f"• {reason}\n"
-
-        return message
-
-    def _format_position_message(self, position: Dict[str, Any]) -> str:
-        """Format position message"""
-        type_emoji = "🟢" if position['type'] == "BUY" else "🔴"
-        pnl_color = "text-green-500" if position['pnl'] >= 0 else "text-red-500"
-
-        message = f"""
-📈 <b>Position Update</b>
-━━━━━━━━━━━━━━━━━━━━
-{type_emoji} <b>Symbol:</b> {position['symbol']}
-{type_emoji} <b>Ticket:</b> {position['ticket']}
-{type_emoji} <b>Type:</b> {position['type']}
-{type_emoji} <b>Volume:</b> {position['volume']}
-{type_emoji} <b>Entry:</b> {position['entry']:.5f}
-{type_emoji} <b>Current:</b> {position['current']:.5f}
-━━━━━━━━━━━━━━━━━━━━
-<b>PnL:</b> {pnl_color}{position['pnl']:.2f}{pnl_color}
-<b>Profit:</b> {position['profit']:.2f}
-<b>Margin:</b> {position['margin']:.2f}
-━━━━━━━━━━━━━━━━━━━━
-<b>SL:</b> {position['sl']:.5f} | <b>TP:</b> {position['tp']:.5f}
-━━━━━━━━━━━━━━━━━━━━
-"""
-
-        return message
-
-    def _format_trade_message(self, trade: Dict[str, Any]) -> str:
-        """Format trade closed message"""
-        type_emoji = "🟢" if trade['type'] == "BUY" else "🔴"
-        pnl_color = "text-green-500" if trade['pnl'] >= 0 else "text-red-500"
-
-        message = f"""
-✅ <b>Trade Closed</b>
-━━━━━━━━━━━━━━━━━━━━
-{type_emoji} <b>Ticket:</b> {trade['ticket']}
-{type_emoji} <b>Symbol:</b> {trade['symbol']}
-{type_emoji} <b>Type:</b> {trade['type']}
-━━━━━━━━━━━━━━━━━━━━
-<b>Entry:</b> {trade['entry']:.5f}
-<b>Exit:</b> {trade['exit']:.5f}
-━━━━━━━━━━━━━━━━━━━━
-<b>PnL:</b> {pnl_color}{trade['pnl']:.2f}{pnl_color}
-<b>Fees:</b> {trade['fees']:.2f}
-━━━━━━━━━━━━━━━━━━━━
-<b>Time:</b> {trade['close_time']}
-━━━━━━━━━━━━━━━━━━━━
-"""
-
-        return message
-
-    def _format_summary_message(self, performance: Dict[str, Any]) -> str:
-        """Format daily summary message"""
-        win_rate = performance.get('win_rate', 0)
-
-        message = f"""
-📊 <b>Daily Performance Summary</b>
-━━━━━━━━━━━━━━━━━━━━
-<b>Total Trades:</b> {performance['total_trades']}
-<b>Win:</b> {performance['win_trades']} | <b>Loss:</b> {performance['loss_trades']}
-<b>Win Rate:</b> {win_rate:.1f}%
-━━━━━━━━━━━━━━━━━━━━
-<b>Total PnL:</b> {performance['total_pnl']:.2f}
-<b>Max Profit:</b> {performance['max_profit']:.2f}
-<b>Max Drawdown:</b> {performance['max_drawdown']:.2f}
-━━━━━━━━━━━━━━━━━━━━
-<b>Avg RR:</b> {performance['avg_risk_reward']:.2f}
-━━━━━━━━━━━━━━━━━━━━
-"""
-
-        return message
-
-    def start_bot(self):
-        """Start Telegram bot (outbound only for stability)"""
-        if not self.bot_token or not self.chat_id:
-            logger.warning("Telegram bot not configured, skipping startup")
-            return
-        
-        logger.info("📱 Telegram notifier ready (Outbound messages only)")
-
-    async def _start_command(self, update, context):
-        """Handle /start command"""
-        await update.message.reply_text(
-            "Welcome to AI Trading Bot!\n\n"
-            "Commands:\n"
-            "/start - Start bot\n"
-            "/help - Show help\n"
-            "/status - Show status"
+        message = (
+            f"{emoji} <b>RISK ALERT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Type: <b>{alert_type}</b>\n"
+            f"{details}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}  |  <i>NexusTrade</i>"
         )
 
-    async def _help_command(self, update, context):
-        """Handle /help command"""
-        await update.message.reply_text(
-            "AI Trading Bot - Help\n\n"
-            "This bot sends trading signals, position updates, and trade notifications.\n\n"
-            "Commands:\n"
-            "/start - Start bot\n"
-            "/help - Show this help\n"
-            "/status - Show bot status"
-        )
+        return await self._send_message(message)
 
-    async def _status_command(self, update, context):
-        """Handle /status command"""
-        await update.message.reply_text(
-            "Bot is running!\n\n"
-            "You will receive:\n"
-            "- New signals\n"
-            "- Position updates\n"
-            "- Trade closed notifications\n"
-            "- Daily summary\n"
-            "- Risk alerts"
-        )
+    def _progress_bar(self, value: float, total: float = 100, length: int = 10) -> str:
+        """Create a visual progress bar"""
+        filled = int(value / total * length)
+        bar = "█" * filled + "░" * (length - filled)
+        return f"[{bar}] {value:.0f}%"
 
 
 # Singleton instance

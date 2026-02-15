@@ -14,7 +14,7 @@ from mt5.connector import connector
 from mt5.position_manager import position_manager
 from database import init_db
 from notification.telegram import telegram_notifier
-from api.routes import market, positions, orders, signals, ai, backtest, journal
+from api.routes import market, positions, orders, signals, ai, backtest, journal, telegram
 from api.websocket import ws_manager
 from fastapi import WebSocket
 
@@ -53,12 +53,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"Balance: ${account['balance']:.2f}")
         logger.info(f"Equity: ${account['equity']:.2f}")
 
-    # Start Telegram bot if configured
+    # Configure Telegram if credentials available
     if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID:
-        logger.info("📱 Starting Telegram bot...")
-        telegram_notifier.start_bot()
+        telegram_notifier.configure(settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID)
+        logger.info("📱 Telegram notifier configured from .env")
     else:
-        logger.warning("⚠️ Telegram bot not configured")
+        logger.info("ℹ️ Telegram not configured (can be set via UI)")
 
     yield
 
@@ -93,6 +93,7 @@ app.include_router(signals.router)
 app.include_router(ai.router)
 app.include_router(backtest.router)
 app.include_router(journal.router)
+app.include_router(telegram.router)
 
 
 @app.websocket("/ws")

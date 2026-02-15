@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     Settings, Key, BarChart2, Brain, CheckCircle2, AlertTriangle,
-    ChevronDown, ChevronUp, Loader2, X, Shield, Zap, Wallet
+    ChevronDown, ChevronUp, Loader2, X, Shield, Zap, Wallet, Send, MessageCircle
 } from 'lucide-react';
 
 const aiProviders = [
@@ -21,6 +21,9 @@ export interface TradingSettings {
     aiProvider: string;
     apiKey: string;
     aiConnected: boolean;
+    telegramToken: string;
+    telegramChatId: string;
+    telegramEnabled: boolean;
 }
 
 export default function SettingsModal({
@@ -36,10 +39,16 @@ export default function SettingsModal({
     onSettingsChange: (settings: TradingSettings) => void;
     accountBalance?: number;
 }) {
-    const [activeTab, setActiveTab] = useState<'ai' | 'trading'>('ai');
+    const [activeTab, setActiveTab] = useState<'ai' | 'trading' | 'telegram'>('ai');
     const [testingAi, setTestingAi] = useState(false);
     const [aiTestResult, setAiTestResult] = useState<{ success: boolean; message: string } | null>(null);
     const [capitalInput, setCapitalInput] = useState(settings.customCapital ? String(settings.customCapital) : '');
+
+    // Telegram state
+    const [localTelegramToken, setLocalTelegramToken] = useState(settings.telegramToken || '');
+    const [localTelegramChatId, setLocalTelegramChatId] = useState(settings.telegramChatId || '');
+    const [testingTelegram, setTestingTelegram] = useState(false);
+    const [telegramTestResult, setTelegramTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
     // Local state for editing
     const [localProvider, setLocalProvider] = useState(settings.aiProvider);
@@ -59,11 +68,14 @@ export default function SettingsModal({
             setLocalRiskReward(settings.riskReward);
             setLocalCustomCapital(settings.customCapital);
             setCapitalInput(settings.customCapital ? String(settings.customCapital) : '');
+            setLocalTelegramToken(settings.telegramToken || '');
+            setLocalTelegramChatId(settings.telegramChatId || '');
             setAiTestResult(null);
+            setTelegramTestResult(null);
         }
     }, [isOpen, settings]);
 
-    const handleSave = () => {
+    const handleSave = async () => {
         const newSettings: TradingSettings = {
             ...settings,
             aiProvider: localProvider,
@@ -72,7 +84,10 @@ export default function SettingsModal({
             riskPercent: localRiskPercent,
             riskReward: localRiskReward,
             customCapital: localCustomCapital,
-            aiConnected: localApiKey.trim().length > 0
+            aiConnected: localApiKey.trim().length > 0,
+            telegramToken: localTelegramToken,
+            telegramChatId: localTelegramChatId,
+            telegramEnabled: !!(localTelegramToken.trim() && localTelegramChatId.trim())
         };
 
         // Save to localStorage
@@ -85,6 +100,21 @@ export default function SettingsModal({
             localStorage.setItem('trading_custom_capital', String(localCustomCapital));
         } else {
             localStorage.removeItem('trading_custom_capital');
+        }
+
+        // Save Telegram settings
+        if (localTelegramToken.trim()) localStorage.setItem('telegram_bot_token', localTelegramToken);
+        else localStorage.removeItem('telegram_bot_token');
+        if (localTelegramChatId.trim()) localStorage.setItem('telegram_chat_id', localTelegramChatId);
+        else localStorage.removeItem('telegram_chat_id');
+
+        // Configure Telegram on backend
+        if (localTelegramToken.trim() && localTelegramChatId.trim()) {
+            try {
+                await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/telegram/configure?bot_token=${encodeURIComponent(localTelegramToken)}&chat_id=${encodeURIComponent(localTelegramChatId)}`, {
+                    method: 'POST'
+                });
+            } catch { /* ignore */ }
         }
 
         onSettingsChange(newSettings);
@@ -116,6 +146,23 @@ export default function SettingsModal({
             setAiTestResult({ success: true, message: 'API Key tersimpan (offline mode)' });
         }
         setTestingAi(false);
+    };
+
+    const handleTestTelegram = async () => {
+        if (!localTelegramToken.trim() || !localTelegramChatId.trim()) return;
+        setTestingTelegram(true);
+        setTelegramTestResult(null);
+        try {
+            const response = await fetch(
+                `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/telegram/test?bot_token=${encodeURIComponent(localTelegramToken)}&chat_id=${encodeURIComponent(localTelegramChatId)}`,
+                { method: 'POST' }
+            );
+            const data = await response.json();
+            setTelegramTestResult({ success: data.success, message: data.message });
+        } catch {
+            setTelegramTestResult({ success: false, message: 'Gagal terhubung ke server backend' });
+        }
+        setTestingTelegram(false);
     };
 
     if (!isOpen) return null;
@@ -160,8 +207,19 @@ export default function SettingsModal({
                         className={`flex-1 py-2.5 text-xs font-medium flex justify-center items-center gap-2 transition-all relative ${activeTab === 'trading' ? 'text-blue-600' : 'text-muted-foreground hover:text-foreground'}`}
                     >
                         <BarChart2 size={14} />
-                        Trading Settings
+                        Trading
                         {activeTab === 'trading' && <span className="absolute bottom-0 left-4 right-4 h-0.5 bg-blue-600 rounded-full" />}
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('telegram')}
+                        className={`flex-1 py-2.5 text-xs font-medium flex justify-center items-center gap-2 transition-all relative ${activeTab === 'telegram' ? 'text-cyan-500' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                        <Send size={14} />
+                        Telegram
+                        {localTelegramToken.trim() && localTelegramChatId.trim() && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse" />
+                        )}
+                        {activeTab === 'telegram' && <span className="absolute bottom-0 left-4 right-4 h-0.5 bg-cyan-500 rounded-full" />}
                     </button>
                 </div>
 
@@ -355,6 +413,98 @@ export default function SettingsModal({
                                     Kosongkan untuk menggunakan balance dari MT5 {accountBalance ? `($${accountBalance.toLocaleString()})` : ''}
                                 </p>
                             </div>
+                        </div>
+                    )}
+
+                    {/* Telegram Tab */}
+                    {activeTab === 'telegram' && (
+                        <div className="space-y-4 animate-in fade-in duration-200">
+                            {/* Instructions */}
+                            <div className="p-3 rounded-xl bg-cyan-500/5 border border-cyan-500/20">
+                                <p className="text-xs text-cyan-600 dark:text-cyan-400 font-medium mb-1">📱 Notifikasi Telegram</p>
+                                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                                    Dapatkan notifikasi sinyal trading langsung ke Telegram Anda.
+                                    Buat bot di <span className="font-medium text-foreground">@BotFather</span> untuk mendapatkan Token,
+                                    lalu kirim pesan ke <span className="font-medium text-foreground">@userinfobot</span> untuk Chat ID.
+                                </p>
+                            </div>
+
+                            {/* Bot Token */}
+                            <div>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block flex items-center gap-1.5">
+                                    <Key size={12} />
+                                    Bot Token
+                                </label>
+                                <input
+                                    type="password"
+                                    placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v..."
+                                    value={localTelegramToken}
+                                    onChange={(e) => setLocalTelegramToken(e.target.value)}
+                                    className="w-full px-3 py-2 text-xs rounded-lg border bg-background outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all"
+                                />
+                            </div>
+
+                            {/* Chat ID */}
+                            <div>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block flex items-center gap-1.5">
+                                    <MessageCircle size={12} />
+                                    Chat ID
+                                </label>
+                                <input
+                                    type="text"
+                                    placeholder="123456789 atau -100123456789 (group)"
+                                    value={localTelegramChatId}
+                                    onChange={(e) => setLocalTelegramChatId(e.target.value)}
+                                    className="w-full px-3 py-2 text-xs rounded-lg border bg-background outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 transition-all"
+                                />
+                            </div>
+
+                            {/* Test Button */}
+                            <button
+                                onClick={handleTestTelegram}
+                                disabled={testingTelegram || !localTelegramToken.trim() || !localTelegramChatId.trim()}
+                                className="w-full py-2.5 text-xs rounded-xl bg-cyan-600 text-white hover:bg-cyan-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 font-medium"
+                            >
+                                {testingTelegram ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                                {testingTelegram ? 'Mengirim pesan test...' : 'Test Koneksi Telegram'}
+                            </button>
+
+                            {/* Test Result */}
+                            {telegramTestResult && (
+                                <div className={`p-3 rounded-xl text-xs flex items-start gap-2 ${telegramTestResult.success ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20'}`}>
+                                    {telegramTestResult.success ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <AlertTriangle size={14} className="mt-0.5 shrink-0" />}
+                                    <span>{telegramTestResult.message}</span>
+                                </div>
+                            )}
+
+                            {/* Status */}
+                            <div className="p-3 rounded-xl bg-secondary/50 border border-border">
+                                <div className="flex items-center gap-2 text-xs">
+                                    <div className={`w-2 h-2 rounded-full ${localTelegramToken.trim() && localTelegramChatId.trim() ? 'bg-cyan-500 animate-pulse' : 'bg-gray-400'}`} />
+                                    <span className="font-medium">
+                                        {localTelegramToken.trim() && localTelegramChatId.trim() ? 'Aktif — Notifikasi akan dikirim' : 'Tidak aktif'}
+                                    </span>
+                                </div>
+                                {localTelegramToken.trim() && localTelegramChatId.trim() && (
+                                    <p className="text-[10px] text-muted-foreground mt-1 ml-4">
+                                        Sinyal dengan confidence ≥ 70% akan otomatis dikirim ke Telegram
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Clear Telegram */}
+                            {(localTelegramToken || localTelegramChatId) && (
+                                <button
+                                    onClick={() => {
+                                        setLocalTelegramToken('');
+                                        setLocalTelegramChatId('');
+                                        setTelegramTestResult(null);
+                                    }}
+                                    className="w-full py-2 text-xs rounded-xl border border-red-500/20 text-red-500 hover:bg-red-500/10 transition-colors"
+                                >
+                                    Hapus Konfigurasi Telegram
+                                </button>
+                            )}
                         </div>
                     )}
                 </div>

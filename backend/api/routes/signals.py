@@ -9,6 +9,7 @@ from mt5.connector import connector
 from ai.genius_ai import genius_ai
 from ai.ai_service import ai_service
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -129,6 +130,27 @@ async def analyze_symbol(
                 logger.error(f"Error enhancing with AI: {e}")
                 # Continue without AI enhancement
                 analysis["ai_error"] = str(e)
+
+        # Auto-send Telegram notification for strong signals
+        if analysis.get("signal") and analysis["signal"].get("confidence", 0) >= 70:
+            try:
+                from notification.telegram import telegram_notifier
+                if telegram_notifier.enabled:
+                    setup = analysis.get("setup", {})
+                    notif_data = {
+                        "symbol": symbol,
+                        "direction": analysis["signal"]["direction"],
+                        "confidence": analysis["signal"]["confidence"],
+                        "entry": setup.get("entry", 0),
+                        "stop_loss": setup.get("stop_loss", 0),
+                        "take_profit": setup.get("take_profit", 0),
+                        "lot_size": setup.get("lot_size", 0),
+                        "risk_reward": setup.get("risk_reward", 0),
+                        "reasons": analysis["signal"].get("reasons", [])
+                    }
+                    asyncio.create_task(telegram_notifier.send_signal(notif_data))
+            except Exception as e:
+                logger.error(f"Error sending Telegram notification: {e}")
 
         return analysis
 

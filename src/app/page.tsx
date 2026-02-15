@@ -43,7 +43,10 @@ export default function Home() {
     customCapital: null,
     aiProvider: 'zai',
     apiKey: '',
-    aiConnected: false
+    aiConnected: false,
+    telegramToken: '',
+    telegramChatId: '',
+    telegramEnabled: false
   });
 
   // Load settings from localStorage on mount
@@ -54,6 +57,8 @@ export default function Home() {
     const savedRiskPercent = localStorage.getItem('trading_risk_percent');
     const savedRiskReward = localStorage.getItem('trading_risk_reward');
     const savedCapital = localStorage.getItem('trading_custom_capital');
+    const savedTelegramToken = localStorage.getItem('telegram_bot_token');
+    const savedTelegramChatId = localStorage.getItem('telegram_chat_id');
 
     setTradingSettings(prev => ({
       ...prev,
@@ -63,8 +68,18 @@ export default function Home() {
       lotSize: savedLotSize ? parseFloat(savedLotSize) : prev.lotSize,
       riskPercent: savedRiskPercent ? parseFloat(savedRiskPercent) : prev.riskPercent,
       riskReward: savedRiskReward ? parseFloat(savedRiskReward) : prev.riskReward,
-      customCapital: savedCapital ? parseFloat(savedCapital) : null
+      customCapital: savedCapital ? parseFloat(savedCapital) : null,
+      telegramToken: savedTelegramToken || '',
+      telegramChatId: savedTelegramChatId || '',
+      telegramEnabled: !!(savedTelegramToken && savedTelegramChatId)
     }));
+
+    // Auto-configure Telegram on backend if credentials exist
+    if (savedTelegramToken && savedTelegramChatId) {
+      fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/telegram/configure?bot_token=${encodeURIComponent(savedTelegramToken)}&chat_id=${encodeURIComponent(savedTelegramChatId)}`, {
+        method: 'POST'
+      }).catch(() => { });
+    }
   }, []);
 
   const addToast = (message: string, type: ToastType) => {
